@@ -20,13 +20,17 @@ parser = argparse.ArgumentParser(description='Adversarial Training with Fairness
 parser.add_argument('--device', type=str, default='cuda', help='Device to use for training (e.model., "cuda" or "cpu")')
 parser.add_argument('--alpha', type=float, default=0.8, help='Weight for the fairness loss term')
 parser.add_argument('--beta', type=float, default=1.0, help='Weight for the task loss term')
+parser.add_argument('--pretrain_epochs', type=int, default=10, help='Number of epochs for training')
 parser.add_argument('--num_epochs', type=int, default=10, help='Number of epochs for training')
+
+
 parser.add_argument('-n', '--noise_strength', type=float, default=0.1, help='Strength of noise added by generator G')
 parser.add_argument('--no_adversarial', action='store_true', help='Enable adversarial training') # is false if not set
 parser.add_argument('--debug', action='store_true', help='Enable adversarial training') # is false if not set
 parser.add_argument('--no_cam', action='store_true', help='Enable adversarial training') # is false if not set
 parser.add_argument('--seed', type=int, default=42, help='seed used for training')
 parser.add_argument('--threshold', type=float, default=0.5, help='threshold for masks')
+parser.add_argument('-pr', '--positive_weight', type=float, default=.98, help='positive_weight')
 args = parser.parse_args()
 # 设置设备
 device = torch.device(args.device if torch.cuda.is_available() else "cpu")
@@ -36,7 +40,6 @@ print(f"Number of GPUs available: {num_gpus}")
 # 设置参数
 alpha = args.alpha
 beta = args.beta
-num_epochs = args.num_epochs
 noise_strength = args.noise_strength
 
 # 数据预处理和加载
@@ -50,24 +53,29 @@ def process_dataset():
     mimic_cxr_path = "../datasets/mimic-cxr/mimic-cxr-jpg-small/2.0.0"  # 修改为实际路径
     chexpert_csv_path = os.path.join(mimic_cxr_path, "mimic-cxr-2.0.0-chexpert.csv")
     patients_csv_path = os.path.join(mimic_cxr_path, "patients.csv")
+    metadata_csv_path = os.path.join(mimic_cxr_path,'mimic-cxr-2.0.0-metadata.csv')
     
     # 读取 CSV 文件
     chexpert_df = pd.read_csv(chexpert_csv_path)
     patients_df = pd.read_csv(patients_csv_path)
+    mimic_cxr_metadata = pd.read_csv(metadata_csv_path)
     
-    # 提取肺炎标签和性别信息
-    # 我们假设 chexpert_df 中有 'Pneumonia' 列，patients_df 中有 'gender' 列
+    # 只选择需要的列，并确保包含 ViewPosition 信息
     chexpert_df = chexpert_df[["study_id", "subject_id", "Pneumonia"]]
     patients_df = patients_df[["subject_id", "gender"]]
 
-    # 合并两个数据集以便关联患者和检查的标签
+    # 加入 ViewPosition 列，合并 chexpert_df 和 mimic-cxr-2.0.0-metadata.csv
+    chexpert_df = pd.merge(chexpert_df, mimic_cxr_metadata[["study_id", "ViewPosition"]], on="study_id")
+    chexpert_df = chexpert_df[chexpert_df['ViewPosition'] == 'PA']
+
+    # 合并两个数据集以关联患者的性别和检查的标签
     mimic_metadata = pd.merge(chexpert_df, patients_df, on="subject_id")
 
     # 将性别转为 0（男性）和 1（女性）
     mimic_metadata['gender'] = mimic_metadata['gender'].map({'M': 0, 'F': 1})
     
     if args.debug:
-        train_metadata, test_metadata = train_test_split(mimic_metadata, test_size=0.005, train_size = 0.045, random_state=args.seed)
+        train_metadata, test_metadata = train_test_split(mimic_metadata, test_size=0.05, train_size = 0.45, random_state=args.seed)
     else:
         train_metadata, test_metadata = train_test_split(mimic_metadata, test_size=0.1, train_size = 0.9, random_state=args.seed)
     train_dataset = MimicCXRDataset(metadata=train_metadata, root_dir=mimic_cxr_path, transform=transform)
@@ -116,15 +124,22 @@ if num_gpus > 1:
     model = nn.DataParallel(model)
     G = nn.DataParallel(G)
 
+if args.pretrain_epochs <= 0:
+    model.load_state_dict(torch.load('models/model.pth'))
+    print("Successfully load model!")
+train_dataset, test_dataset, train_loader, test_loader = process_dataset()
 # 损失函数和优化器
-criterion_task = nn.CrossEntropyLoss()
+pw = args.positive_weight * train_dataset.calculate_neg_pos_ratio()
+class_weights = torch.tensor([1.0, pw]).to(device)  # 权重为 [阴性, 阳性]
+print(f"positive weight: {pw:.4f}")
+criterion_task = nn.CrossEntropyLoss(weight=class_weights)
 criterion_fair = nn.BCELoss()
-optimizer_G = optim.Adam(G.parameters(), lr=0.001)
-optimizer_model = optim.SGD(model.parameters(), lr=0.0001)
+optimizer_G = optim.Adam(G.parameters(), lr=4e-4)
+optimizer_model = optim.SGD(model.parameters(), lr=4e-4)
 optimizer_model_adv = optim.Adam(model.parameters(), lr=4e-4)
 optimizer_feature = optim.Adam(model.module.feature_extractor.parameters(), lr=0.0004)
 
-train_dataset, test_dataset, train_loader, test_loader = process_dataset()
+
 
 def train_round():
     model.train()
@@ -166,6 +181,7 @@ def train_round():
     final_loss = total_loss / len(train_loader)
     final_accuracy = correct / total
     print(f"Final Training Loss: {final_loss:.4f}, Accuracy: {final_accuracy:.4f}")
+    torch.save(model.state_dict(), 'models/model.pth')
 
 def gen_mask(images, pneumonia_labels):
     zone_y = generate_zone_masks(images[:1], int(pneumonia_labels[0]), 'Y')
@@ -247,7 +263,7 @@ def adversarial_round(noise_strength=0.1):
             else:
                 print(f"Step [{i+1}/{len(train_loader)}], Loss D: {loss_D.item():.4f}, Loss G: {L_G.item():.4f}")
                 
-           
+                
 def acc_test_round(model, model_G, noise_strength=0.1):
     model.eval()  # 设置特征提取器为评估模式
     model_G.eval()  # 设置生成器为评估模式
@@ -255,6 +271,8 @@ def acc_test_round(model, model_G, noise_strength=0.1):
     total_loss = 0.0
     correct = 0
     total = 0
+    count_a, count_a_yhat1, count_a_y1, count_a_y0, count_a_y1_yhat1, count_a_y0_yhat0 = 0, 0, 0, 0, 0, 0 
+    count_na, count_na_yhat1, count_na_y1, count_na_y0, count_na_y1_yhat1, count_na_y0_yhat0 = 0, 0, 0, 0, 0, 0 
     
     with torch.no_grad():  # 禁用梯度计算
         for images, pneumonia_labels, gender_labels in test_loader:
@@ -269,6 +287,39 @@ def acc_test_round(model, model_G, noise_strength=0.1):
             # 前向传播
             outputs = model(perturbed_images)  # 提取特征
             
+            ## calculate fairness
+            scores, indices = outputs.max(1)
+            for i in range(images.shape[0]):
+                if gender_labels[i] == 1:
+                    count_a += 1
+                    if indices[i] == 1:
+                        count_a_yhat1 += 1
+                        if pneumonia_labels[i] == 1:
+                            count_a_y1_yhat1 += 1
+                    if indices[i] == 0:
+                        if pneumonia_labels[i] == 0:
+                            count_a_y0_yhat0 += 1
+                    if pneumonia_labels[i] == 1:
+                        count_a_y1 += 1
+                    if pneumonia_labels[i] == 0:
+                        count_a_y0 += 1
+                    
+                else:
+                    count_na += 1
+                    if indices[i] == 1:
+                        count_na_yhat1 += 1
+                        if pneumonia_labels[i] == 1:
+                            count_na_y1_yhat1 += 1
+                    if indices[i] == 0:
+                        if pneumonia_labels[i] == 0:
+                            count_na_y0_yhat0 += 1
+                    if pneumonia_labels[i] == 1:
+                        count_na_y1 += 1
+                    if pneumonia_labels[i] == 0:
+                        count_na_y0 += 1
+            ## end calculate fairness
+            
+            
             # 计算损失
             loss = criterion_task(outputs, pneumonia_labels)
             total_loss += loss.item()
@@ -281,6 +332,9 @@ def acc_test_round(model, model_G, noise_strength=0.1):
     accuracy = correct / total  # 计算准确率
 
     print(f"Test Loss: {avg_loss:.4f}, Accuracy: {accuracy:.4f}")
+    DP = abs(count_a_yhat1/count_a - count_na_yhat1/count_na)
+    EO = abs(count_a_y1_yhat1/count_a_y1 - count_na_y1_yhat1/count_na_y1)
+    print(f"DP:{DP:.2f}, EO:{EO:.2f}")
 
     return avg_loss, accuracy
  
@@ -316,8 +370,9 @@ def fairness_acc_test_round(noise_strength=0.1):
     
     return accuracy
 
-for epoch in range(num_epochs):
+for epoch in range(args.pretrain_epochs):
     train_round()
+for epoch in range(args.num_epochs):
     adversarial_round(noise_strength)
     acc_test_round(model, G, noise_strength)
     fairness_acc_test_round(noise_strength)

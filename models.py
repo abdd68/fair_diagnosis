@@ -22,7 +22,7 @@ class FeatureExtractor(nn.Module):
         super(FeatureExtractor, self).__init__()
         
         # 加载 ResNet18 的特征提取部分
-        resnet = models.resnet18(pretrained=True)
+        resnet = models.resnet50(pretrained=True)
         # 保存每一层的引用
         self.layer1 = resnet.layer1
         self.layer2 = resnet.layer2
