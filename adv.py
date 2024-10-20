@@ -20,15 +20,17 @@ parser = argparse.ArgumentParser(description='Adversarial Training with Fairness
 parser.add_argument('--device', type=str, default='cuda', help='Device to use for training (e.model., "cuda" or "cpu")')
 parser.add_argument('--alpha', type=float, default=0.8, help='Weight for the fairness loss term')
 parser.add_argument('--beta', type=float, default=1.0, help='Weight for the task loss term')
+parser.add_argument('-lr','--lr', type=float, default=8e-6, help='Weight for the task loss term')
 parser.add_argument('--pretrain_epochs', type=int, default=10, help='Number of epochs for training')
 parser.add_argument('--num_epochs', type=int, default=10, help='Number of epochs for training')
 
 
 parser.add_argument('-n', '--noise_strength', type=float, default=0.1, help='Strength of noise added by generator G')
 parser.add_argument('--no_adversarial', action='store_true', help='Enable adversarial training') # is false if not set
+parser.add_argument('-v', '--visualize', action='store_true', help='Enable visualization') # is false if not set
 parser.add_argument('--debug', action='store_true', help='Enable adversarial training') # is false if not set
 parser.add_argument('--no_cam', action='store_true', help='Enable adversarial training') # is false if not set
-parser.add_argument('--seed', type=int, default=42, help='seed used for training')
+parser.add_argument('-s','--seed', type=int, default=42, help='seed used for training')
 parser.add_argument('--threshold', type=float, default=0.5, help='threshold for masks')
 parser.add_argument('-pr', '--positive_weight', type=float, default=.98, help='positive_weight')
 args = parser.parse_args()
@@ -48,6 +50,10 @@ transform = transforms.Compose([
     transforms.ToTensor(),
     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]) # 标准化
 ])
+invTrans = transforms.Compose([ transforms.Normalize(mean = [ 0., 0., 0. ],
+	                                                 std = [ 1/0.229, 1/0.224, 1/0.225 ]),
+	                            transforms.Normalize(mean = [ -0.485, -0.456, -0.406 ],
+	                                                 std = [ 1., 1., 1. ]),])
 
 def process_dataset():
     mimic_cxr_path = "../datasets/mimic-cxr/mimic-cxr-jpg-small/2.0.0"  # 修改为实际路径
@@ -134,10 +140,10 @@ class_weights = torch.tensor([1.0, pw]).to(device)  # 权重为 [阴性, 阳性]
 print(f"positive weight: {pw:.4f}")
 criterion_task = nn.CrossEntropyLoss(weight=class_weights)
 criterion_fair = nn.BCELoss()
-optimizer_G = optim.Adam(G.parameters(), lr=4e-4)
+optimizer_G = optim.Adam(G.parameters(), lr=args.lr)
 optimizer_model = optim.SGD(model.parameters(), lr=4e-4)
-optimizer_model_adv = optim.Adam(model.parameters(), lr=4e-4)
-optimizer_feature = optim.Adam(model.module.feature_extractor.parameters(), lr=0.0004)
+optimizer_model_adv = optim.Adam(model.parameters(), lr=args.lr)
+optimizer_feature = optim.Adam(model.module.feature_extractor.parameters(), lr=args.lr)
 
 
 
@@ -183,6 +189,36 @@ def train_round():
     print(f"Final Training Loss: {final_loss:.4f}, Accuracy: {final_accuracy:.4f}")
     torch.save(model.state_dict(), 'models/model.pth')
 
+import matplotlib.pyplot as plt
+import cv2
+
+def show_mask_on_image(img, masky, masks):
+    img_p = invTrans(img[0])
+    img_heatbase = np.array(img_p.detach().cpu().squeeze().transpose(0,2).transpose(0,1))[:, :, ::-1]
+    
+    to_pil = transforms.ToPILImage()
+    img_out = to_pil(img_p)
+    img_out.save('images/output_image.png')
+    
+    masky, masks = masky.squeeze(), masks.squeeze()
+    # masky
+    heatmap = cv2.applyColorMap(np.uint8(255 * masky), cv2.COLORMAP_JET)
+    heatmap = np.float32(heatmap) / 255
+    cam = heatmap + np.float32(img_heatbase)
+    cam = cam / np.max(cam)
+    masked_image = np.uint8(255 * cam)
+    cv2.imwrite(f'images/masked_output_y.png', masked_image)
+    
+    # masks
+    heatmap = cv2.applyColorMap(np.uint8(255 * masks), cv2.COLORMAP_JET)
+    heatmap = np.float32(heatmap) / 255
+    cam = heatmap + np.float32(img_heatbase)
+    cam = cam / np.max(cam)
+    masked_image = np.uint8(255 * cam)
+    cv2.imwrite(f'images/masked_output_s.png', masked_image)
+    print("Successfully output an image!")
+    return 
+    
 def gen_mask(images, pneumonia_labels):
     zone_y = generate_zone_masks(images[:1], int(pneumonia_labels[0]), 'Y')
     zone_s = generate_zone_masks(images[:1], 0, 'S')
@@ -192,6 +228,8 @@ def gen_mask(images, pneumonia_labels):
     non_zone_y_mask = 1 - tripartite_mask_y
     tripartite_mask_s = (zone_s > threshold_s)
     tripartite_mask = non_zone_y_mask + 5 * tripartite_mask_s
+    if args.visualize:
+        show_mask_on_image(images, zone_y, zone_s)
     
     return tripartite_mask
 
@@ -200,6 +238,26 @@ def process_mask(noise, mask):
     mask = mask.unsqueeze(0).repeat(noise.shape[0], 3, 1, 1).to(device)  # 形状变为 (1, 1, 224, 224)
     return noise * mask
 
+def visualize_noise(noise):
+    # 如果 noise 是一个 Tensor，先将其移到 CPU 并转换为 NumPy 格式
+    if isinstance(noise, torch.Tensor):
+        noise = noise.detach().cpu().numpy()
+
+    # 调整通道顺序从 [C, H, W] 到 [H, W, C]，用于 Matplotlib 显示
+    
+    noise = np.transpose(noise[0], (1, 2, 0))
+    # 确保 noise 的值在 [0, 1] 范围内
+    noise = (noise - noise.min()) / (noise.max() - noise.min())
+
+    # 使用 Matplotlib 可视化
+    plt.imshow(noise)
+    plt.axis('off')
+    plt.subplots_adjust(left=0, right=1, top=1, bottom=0)  # 去掉边缘空白
+    plt.savefig('images/noise.png', bbox_inches='tight', pad_inches=0)
+    print("Successfully output the noise!")
+    breakpoint()
+    return
+    
 def adversarial_round(noise_strength=0.1):
     for i, (images, pneumonia_labels, gender_labels) in enumerate(train_loader):
         images = images.to(device)
@@ -218,6 +276,9 @@ def adversarial_round(noise_strength=0.1):
             perturbed_images = images
         else:
             noise = process_mask(G(images) * noise_strength, tripartite_mask)  # 控制扰动强度
+            if args.visualize:
+                visualize_noise(noise)
+                
             perturbed_images = torch.clamp(images + noise, -4, 4)
             
         outputs_D_fair = model(perturbed_images, 'S')
