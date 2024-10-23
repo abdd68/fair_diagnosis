@@ -10,7 +10,7 @@ import numpy as np
 from tqdm import tqdm
 import argparse
 from pytorch_grad_cam import GradCAM
-from models import Generator, FeatureExtractor, GenderClassifier
+from models import Generator, Discriminator, Deployed_model, GenderClassifier
 from import_datasets import MimicCXRDataset
 
 # 检查 GPU 是否可用
@@ -32,8 +32,9 @@ parser.add_argument('--debug', action='store_true', help='Enable adversarial tra
 parser.add_argument('--no_cam', action='store_true', help='Enable adversarial training') # is false if not set
 parser.add_argument('-s','--seed', type=int, default=42, help='seed used for training')
 parser.add_argument('--threshold', type=float, default=0.5, help='threshold for masks')
-parser.add_argument('-pr', '--positive_weight', type=float, default=.98, help='positive_weight')
+parser.add_argument('-pr', '--positive_weight', type=float, default=.97, help='positive_weight')
 args = parser.parse_args()
+print(args)
 # 设置设备
 device = torch.device(args.device if torch.cuda.is_available() else "cpu")
 num_gpus = torch.cuda.device_count()
@@ -69,14 +70,16 @@ def process_dataset():
     # 只选择需要的列，并确保包含 ViewPosition 信息
     chexpert_df = chexpert_df[["study_id", "subject_id", "Pneumonia"]]
     patients_df = patients_df[["subject_id", "gender"]]
-
+    merged_df = pd.merge(chexpert_df, patients_df, on="subject_id")
     # 加入 ViewPosition 列，合并 chexpert_df 和 mimic-cxr-2.0.0-metadata.csv
-    chexpert_df = pd.merge(chexpert_df, mimic_cxr_metadata[["study_id", "ViewPosition"]], on="study_id")
-    chexpert_df = chexpert_df[chexpert_df['ViewPosition'] == 'PA']
+    pa_df = mimic_cxr_metadata[mimic_cxr_metadata["ViewPosition"] == "PA"]
 
-    # 合并两个数据集以关联患者的性别和检查的标签
-    mimic_metadata = pd.merge(chexpert_df, patients_df, on="subject_id")
+    # 如果需要合并，可以在过滤后的 chexpert_df 上进行 merge
+    mimic_metadata = pd.merge(pa_df, merged_df, on="study_id")
 
+    mimic_metadata["subject_id"] = mimic_metadata["subject_id_x"]  # 或者使用 subject_id_y
+    mimic_metadata = mimic_metadata.drop(columns=["subject_id_x", "subject_id_y"])
+    
     # 将性别转为 0（男性）和 1（女性）
     mimic_metadata['gender'] = mimic_metadata['gender'].map({'M': 0, 'F': 1})
     
@@ -97,32 +100,23 @@ def process_dataset():
 
 from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
 
-def generate_zone_masks(images, labels, mode = 'Y'):
+def generate_zone_masks_Y(images, labels):
     targets = [ClassifierOutputTarget(labels)]
-    if mode == 'Y':
-        zone_mask = gradcam_Y(input_tensor=images, targets=targets)
-    elif mode == 'S':
-        zone_mask = gradcam_S(input_tensor=images, targets=targets)
+    zone_mask = gradcam_Y(input_tensor=images, targets=targets)
+    return zone_mask
+
+def generate_zone_masks_Z(images, labels):
+    targets = [ClassifierOutputTarget(labels)]
+    zone_mask = gradcam_Z(input_tensor=images, targets=targets)
     return zone_mask
 
 # 模型初始化并移动到 GPU（如果可用），并使用 DataParallel 包裹模型
-model = FeatureExtractor(num_classes = 2).to(device)
+model = Deployed_model(num_classes = 2).to(device)
 G = Generator().to(device)
+D = Discriminator().to(device)
 
-class ModeWrapper(nn.Module):
-    def __init__(self, model, mode='Y'):
-        super(ModeWrapper, self).__init__()
-        self.model = model
-        self.mode = mode
-
-    def forward(self, x):
-        # 在前向传播中指定 mode
-        return self.model(x, mode=self.mode)
-
-model_Y = ModeWrapper(model, mode='Y')
-model_S = ModeWrapper(model, mode='S')
-gradcam_Y = GradCAM(model=model_Y, target_layers=[model.layer4[1].conv2], use_cuda=torch.cuda.is_available())
-gradcam_S = GradCAM(model=model_S, target_layers=[model.layer4[1].conv2], use_cuda=torch.cuda.is_available())
+gradcam_Y = GradCAM(model=model, target_layers=[model.layer4[1].conv2], use_cuda=torch.cuda.is_available())
+gradcam_Z = GradCAM(model=D, target_layers=[D.conv3], use_cuda=torch.cuda.is_available())
 
 # torch.backends.cudnn.enabled = False
 # 如果有多张 GPU，使用 DataParallel 包裹模型
@@ -140,16 +134,15 @@ class_weights = torch.tensor([1.0, pw]).to(device)  # 权重为 [阴性, 阳性]
 print(f"positive weight: {pw:.4f}")
 criterion_task = nn.CrossEntropyLoss(weight=class_weights)
 criterion_fair = nn.BCELoss()
+
 optimizer_G = optim.Adam(G.parameters(), lr=args.lr)
+optimizer_D = optim.Adam(D.parameters(), lr=args.lr)
 optimizer_model = optim.SGD(model.parameters(), lr=4e-4)
-optimizer_model_adv = optim.Adam(model.parameters(), lr=args.lr)
-optimizer_feature = optim.Adam(model.module.feature_extractor.parameters(), lr=args.lr)
-
-
 
 def train_round():
     model.train()
     G.eval()
+    D.eval()
     
     total_loss = 0.0
     correct = 0
@@ -157,16 +150,16 @@ def train_round():
     
     # 使用 tqdm 包装 train_loader
     progress_bar = tqdm(train_loader, desc="Training")
-    for images, pneumonia_labels, gender_labels in progress_bar:
+    for images, target_labels, sensitive_labels in progress_bar:
         # 将数据移动到 GPU/CPU
         images = images.to(device)
-        pneumonia_labels = pneumonia_labels.to(device)
+        target_labels = target_labels.to(device)
 
         # 前向传播
         outputs = model(images)  # 提取特征
 
         # 计算损失
-        loss = criterion_task(outputs, pneumonia_labels)
+        loss = criterion_task(outputs, target_labels)
 
         # 反向传播和优化
         optimizer_model.zero_grad()
@@ -176,8 +169,8 @@ def train_round():
         # 记录损失和准确率
         total_loss += loss.item()
         _, predicted = torch.max(outputs, 1)
-        correct += (predicted == pneumonia_labels).sum().item()
-        total += pneumonia_labels.size(0)
+        correct += (predicted == target_labels).sum().item()
+        total += target_labels.size(0)
         
         # 计算平均损失并显示在 tqdm 中
         avg_loss = total_loss / total
@@ -219,9 +212,9 @@ def show_mask_on_image(img, masky, masks):
     print("Successfully output an image!")
     return 
     
-def gen_mask(images, pneumonia_labels):
-    zone_y = generate_zone_masks(images[:1], int(pneumonia_labels[0]), 'Y')
-    zone_s = generate_zone_masks(images[:1], 0, 'S')
+def gen_mask(images, target_labels):
+    zone_y = generate_zone_masks_Y(images[:1], int(target_labels[0])) # need to fix
+    zone_s = generate_zone_masks_Z(images[:1], 0) # need to fix
     threshold_y = zone_y.max() * args.threshold
     threshold_s = zone_s.max() * args.threshold
     tripartite_mask_y = (zone_y > threshold_y)
@@ -259,70 +252,73 @@ def visualize_noise(noise):
     return
     
 def adversarial_round(noise_strength=0.1):
-    for i, (images, pneumonia_labels, gender_labels) in enumerate(train_loader):
+    for i, (images, target_labels, sensitive_labels) in enumerate(train_loader):
         images = images.to(device)
-        pneumonia_labels = pneumonia_labels.to(device)
-        gender_labels = gender_labels.to(device)
+        target_labels = target_labels.to(device)
+        sensitive_labels = sensitive_labels.to(device)
         
         if not args.no_cam:
-            tripartite_mask = gen_mask(images, pneumonia_labels)
+            tripartite_mask = gen_mask(images, target_labels)
         else:
             tripartite_mask = np.ones((1, 224, 224))
             
-        # G -> model -> D round: Update (D)
-        model.train()
-        G.eval()
         if args.no_adversarial:
             perturbed_images = images
         else:
-            noise = process_mask(G(images) * noise_strength, tripartite_mask)  # 控制扰动强度
+            noise = process_mask(G(images), tripartite_mask)  # 控制扰动强度
             if args.visualize:
                 visualize_noise(noise)
                 
-            perturbed_images = torch.clamp(images + noise, -4, 4)
+            perturbed_images = torch.clamp(images * (1 - noise_strength) + noise * noise_strength, -4, 4)
             
-        outputs_D_fair = model(perturbed_images, 'S')
-
-        # 判别器的损失
-        loss_D = criterion_fair(outputs_D_fair, gender_labels.unsqueeze(1))
-        
-        # 更新判别器 D 的梯度
-        optimizer_feature.zero_grad()
-        loss_D.backward()
-        optimizer_feature.step()
-        
-        # G -> model -> f/D round: Update (G), model, f
         if not args.no_adversarial:
+            # G -> model -> D round: Update (D)
+            
+            model.eval()
+            G.eval()
+            D.train()
+            outputs_D = D(perturbed_images, target_labels)
+
+            # 判别器的损失
+            loss_D = criterion_fair(outputs_D, sensitive_labels.unsqueeze(1))
+            
+            # 更新判别器 D 的梯度
+            optimizer_D.zero_grad()
+            loss_D.backward()
+            optimizer_D.step()
+            
+            # G -> model -> f/D round: Update (G), model, f
+        
             model.eval()
             G.train()
-            noise = process_mask(G(images) * noise_strength, tripartite_mask)  # 控制扰动强度
-            perturbed_images = torch.clamp(images + noise, -4, 4)
-            predictions, outputs_D_fair = model(perturbed_images, 'YS')  # 提取扰动后的特征
+            D.eval()
+            noise = process_mask(G(images), tripartite_mask)  # 控制扰动强度
+            perturbed_images = torch.clamp(images * (1 - noise_strength) + noise * noise_strength, -4, 4)
+            predictions = model(perturbed_images)  # 提取扰动后的特征
+            outputs_D = D(perturbed_images, target_labels)
             
             # 生成器的公平性损失
-            entropy = - (outputs_D_fair * torch.log(outputs_D_fair + 1e-8) + (1 - outputs_D_fair) * torch.log(1 - outputs_D_fair + 1e-8))
+            entropy = - (outputs_D * torch.log(outputs_D + 1e-8) + (1 - outputs_D) * torch.log(1 - outputs_D + 1e-8))
             entropy_loss = torch.mean(entropy)
-            L_G_fair = -criterion_fair(outputs_D_fair, gender_labels.unsqueeze(1)) - alpha * entropy_loss
+            L_G_fair = -criterion_fair(outputs_D, sensitive_labels.unsqueeze(1)) - alpha * entropy_loss
             
             # 分类损失（肺炎标签）
-            L_G_T = criterion_task(predictions, pneumonia_labels)
+            L_G_Target = criterion_task(predictions, target_labels)
             
             # 生成器的总损失
-            L_G = L_G_fair + beta * L_G_T
+            L_G = L_G_fair + beta * L_G_Target
             
             # 更新生成器 G, 特征提取器 model, 标签预测器 f 的梯度
-            optimizer_model_adv.zero_grad()
             optimizer_G.zero_grad()
             L_G.backward()
-            optimizer_model_adv.step()
             optimizer_G.step()
             
-        # 打印训练信息
-        if (i + 1) % 20 == 0:
-            if args.no_adversarial:
-                print(f"Step [{i+1}/{len(train_loader)}], Loss D: {loss_D.item():.4f}")
-            else:
-                print(f"Step [{i+1}/{len(train_loader)}], Loss D: {loss_D.item():.4f}, Loss G: {L_G.item():.4f}")
+            # 打印训练信息
+            if (i + 1) % 20 == 0:
+                if args.no_adversarial:
+                    print(f"Step [{i+1}/{len(train_loader)}], Loss D: {loss_D.item():.4f}")
+                else:
+                    print(f"Step [{i+1}/{len(train_loader)}], Loss D: {loss_D.item():.4f}, Loss G: {L_G.item():.4f}")
                 
                 
 def acc_test_round(model, model_G, noise_strength=0.1):
@@ -336,14 +332,17 @@ def acc_test_round(model, model_G, noise_strength=0.1):
     count_na, count_na_yhat1, count_na_y1, count_na_y0, count_na_y1_yhat1, count_na_y0_yhat0 = 0, 0, 0, 0, 0, 0 
     
     with torch.no_grad():  # 禁用梯度计算
-        for images, pneumonia_labels, gender_labels in test_loader:
+        for images, target_labels, sensitive_labels in test_loader:
             # 将数据移动到指定设备（GPU或CPU）
             images = images.to(device)
-            pneumonia_labels = pneumonia_labels.to(device)
+            target_labels = target_labels.to(device)
 
             # 使用生成器 G 生成噪声并加到图像上
-            noise = model_G(images) * noise_strength  # 控制扰动强度
-            perturbed_images = torch.clamp(images + noise, -4, 4)
+            if not args.no_adversarial:
+                noise = model_G(images) * noise_strength  # 控制扰动强度
+                perturbed_images = torch.clamp(images + noise, -4, 4)
+            else:
+                perturbed_images = images
 
             # 前向传播
             outputs = model(perturbed_images)  # 提取特征
@@ -351,43 +350,43 @@ def acc_test_round(model, model_G, noise_strength=0.1):
             ## calculate fairness
             scores, indices = outputs.max(1)
             for i in range(images.shape[0]):
-                if gender_labels[i] == 1:
+                if sensitive_labels[i] == 1:
                     count_a += 1
                     if indices[i] == 1:
                         count_a_yhat1 += 1
-                        if pneumonia_labels[i] == 1:
+                        if target_labels[i] == 1:
                             count_a_y1_yhat1 += 1
                     if indices[i] == 0:
-                        if pneumonia_labels[i] == 0:
+                        if target_labels[i] == 0:
                             count_a_y0_yhat0 += 1
-                    if pneumonia_labels[i] == 1:
+                    if target_labels[i] == 1:
                         count_a_y1 += 1
-                    if pneumonia_labels[i] == 0:
+                    if target_labels[i] == 0:
                         count_a_y0 += 1
                     
                 else:
                     count_na += 1
                     if indices[i] == 1:
                         count_na_yhat1 += 1
-                        if pneumonia_labels[i] == 1:
+                        if target_labels[i] == 1:
                             count_na_y1_yhat1 += 1
                     if indices[i] == 0:
-                        if pneumonia_labels[i] == 0:
+                        if target_labels[i] == 0:
                             count_na_y0_yhat0 += 1
-                    if pneumonia_labels[i] == 1:
+                    if target_labels[i] == 1:
                         count_na_y1 += 1
-                    if pneumonia_labels[i] == 0:
+                    if target_labels[i] == 0:
                         count_na_y0 += 1
             ## end calculate fairness
             
             
             # 计算损失
-            loss = criterion_task(outputs, pneumonia_labels)
+            loss = criterion_task(outputs, target_labels)
             total_loss += loss.item()
             # 计算准确率
             _, predicted = torch.max(outputs, 1)  # 获得最大预测值的索引
-            correct += (predicted == pneumonia_labels).sum().item()
-            total += pneumonia_labels.size(0)
+            correct += (predicted == target_labels).sum().item()
+            total += target_labels.size(0)
     
     avg_loss = total_loss / len(test_loader)  # 计算平均损失
     accuracy = correct / total  # 计算准确率
@@ -399,44 +398,64 @@ def acc_test_round(model, model_G, noise_strength=0.1):
 
     return avg_loss, accuracy
  
-def fairness_acc_test_round(noise_strength=0.1):
-    """
-    进行公平性测试，评估判别器在添加生成器生成的噪声后的表现。
-    """
-    G.eval()  # 设置生成器为评估模式
-    model.eval()  # 设置特征提取器为评估模式
-
-    correct = 0
-    total = 0
-
-    with torch.no_grad():
-        for images, _, gender_labels in tqdm(test_loader, desc='Fairness Test Progress'):
-            images = images.to(device)
-            gender_labels = gender_labels.to(device)
-
-            # 添加生成器生成的噪声
-            noise = G(images) * noise_strength  # 控制扰动强度
-            perturbed_images = torch.clamp(images + noise, -4, 4)
-
-            # 提取扰动后的特征
-            outputs_D_fair = model(perturbed_images, 'S').squeeze()
-
-            # 判别器的输出，用于预测性别标签
-            predicted = (outputs_D_fair > 0.5).long()  # 使用 0.5 阈值进行二分类预测
-            correct += (predicted == gender_labels).sum().item()
-            total += gender_labels.size(0)
-
-    accuracy = correct / total
-    print(f"Fairness Test Accuracy: {accuracy:.4f}")
+# def fairness_acc_test_round(noise_strength=0.1):
+#     """
+#     进行公平性测试，评估判别器在添加生成器生成的噪声后的表现。
+#     """
+#     fair_cls = Discriminator().to(device)
+#     fair_cls.train()
+#     optimizer_fair_cls = optim.Adam(fair_cls.parameters(), lr=args.lr)
     
-    return accuracy
+#     for epoch in range(1):
+#         for images, target_labels, sensitive_labels in tqdm(train_loader, desc='Fairness train Progress'):
+#             images = images.to(device)
+#             target_labels = target_labels.to(device)
+#             sensitive_labels = sensitive_labels.to(device)
+
+#             # 添加生成器生成的噪声
+#             noise = G(images)   # 控制扰动强度
+#             perturbed_images = torch.clamp(images * (1-noise_strength) + noise * noise_strength, -4, 4)
+
+#             # 提取扰动后的特征
+#             outputs_D = fair_cls(perturbed_images, target_labels).squeeze()
+#             loss_D = criterion_fair(outputs_D, sensitive_labels)
+            
+#             optimizer_fair_cls.zero_grad()
+#             loss_D.backward()
+#             optimizer_fair_cls.step()
+            
+#     correct = 0
+#     total = 0
+#     fair_cls.eval()
+#     with torch.no_grad():
+#         for images, target_labels, sensitive_labels in tqdm(test_loader, desc='Fairness test Progress'):
+#             images = images.to(device)
+#             target_labels = target_labels.to(device)
+#             sensitive_labels = sensitive_labels.to(device)
+
+#             # 添加生成器生成的噪声
+#             noise = G(images)   # 控制扰动强度
+#             perturbed_images = torch.clamp(images * (1-noise_strength) + noise * noise_strength, -4, 4)
+
+#             # 提取扰动后的特征
+#             outputs_D = fair_cls(perturbed_images, target_labels).squeeze()
+
+#             # 判别器的输出，用于预测性别标签
+#             predicted = (outputs_D > 0.5).long()  # 使用 0.5 阈值进行二分类预测
+#             correct += (predicted == sensitive_labels).sum().item()
+#             total += sensitive_labels.size(0)
+
+#     accuracy = correct / total
+#     print(f"Fairness Test Accuracy: {accuracy:.4f}")
+    
+#     return accuracy
 
 for epoch in range(args.pretrain_epochs):
     train_round()
 for epoch in range(args.num_epochs):
     adversarial_round(noise_strength)
     acc_test_round(model, G, noise_strength)
-    fairness_acc_test_round(noise_strength)
+    # fairness_acc_test_round(noise_strength)
     
 
 print("Training completed.")

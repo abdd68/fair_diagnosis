@@ -1,7 +1,4 @@
 #!/bin/bash
 
-python adv.py --num_epochs 3 --noise_strength 0.1 --debug  --pretrain_epochs 5 -lr 8e-5
-python adv.py --num_epochs 3 --noise_strength 0.1 --debug  --pretrain_epochs 5 -lr 6e-5
-python adv.py --num_epochs 3 --noise_strength 0.1 --debug  --pretrain_epochs 5 -lr 4e-5
-python adv.py --num_epochs 3 --noise_strength 0.1 --debug  --pretrain_epochs 5 -lr 2e-5
-python adv.py --num_epochs 3 --noise_strength 0.1 --debug  --pretrain_epochs 5 -lr 8e-6
+python adv.py --num_epochs 5 --noise_strength 0.1 --pretrain_epochs 10 -lr 1e-4 --no_adversarial
+python adv.py --num_epochs 5 --noise_strength 0.1 --pretrain_epochs 5 -lr 1e-4
