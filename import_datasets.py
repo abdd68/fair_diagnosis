@@ -11,7 +11,9 @@ from torch.utils.data import DataLoader
 
 class MimicCXRDataset(Dataset):
     def __init__(self, metadata, root_dir, transform=None):
-        self.metadata = metadata.dropna(subset=["study_id", "subject_id", "Pneumonia", "gender"]).reset_index(drop=True)
+        # self.metadata = metadata.dropna(subset=["study_id", "subject_id", "Pneumonia", "gender"]).reset_index(drop=True)
+        self.metadata = metadata
+        self.metadata["Pneumonia"] = self.metadata["Pneumonia"].fillna(0)
         self.metadata["Pneumonia"] = self.metadata["Pneumonia"].replace(-1, 0)
         self.root_dir = root_dir
         self.transform = transform
