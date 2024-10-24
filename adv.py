@@ -32,7 +32,7 @@ parser.add_argument('--debug', action='store_true', help='Enable adversarial tra
 parser.add_argument('--no_cam', action='store_true', help='Enable adversarial training') # is false if not set
 parser.add_argument('-s','--seed', type=int, default=42, help='seed used for training')
 parser.add_argument('--threshold', type=float, default=0.5, help='threshold for masks')
-parser.add_argument('-pr', '--positive_weight', type=float, default=.97, help='positive_weight')
+parser.add_argument('-pr', '--positive_weight', type=float, default=1., help='positive_weight')
 args = parser.parse_args()
 print(args)
 # 设置设备
@@ -73,7 +73,7 @@ def process_dataset():
     merged_df = pd.merge(chexpert_df, patients_df, on="subject_id")
     # 加入 ViewPosition 列，合并 chexpert_df 和 mimic-cxr-2.0.0-metadata.csv
     pa_df = mimic_cxr_metadata[mimic_cxr_metadata["ViewPosition"] == "PA"]
-
+    # pa_df = mimic_cxr_metadata
     # 如果需要合并，可以在过滤后的 chexpert_df 上进行 merge
     mimic_metadata = pd.merge(pa_df, merged_df, on="study_id")
 
@@ -84,7 +84,7 @@ def process_dataset():
     mimic_metadata['gender'] = mimic_metadata['gender'].map({'M': 0, 'F': 1})
     
     if args.debug:
-        train_metadata, test_metadata = train_test_split(mimic_metadata, test_size=0.05, train_size = 0.45, random_state=args.seed)
+        train_metadata, test_metadata = train_test_split(mimic_metadata, test_size=0.01, train_size = 0.09, random_state=args.seed)
     else:
         train_metadata, test_metadata = train_test_split(mimic_metadata, test_size=0.1, train_size = 0.9, random_state=args.seed)
     train_dataset = MimicCXRDataset(metadata=train_metadata, root_dir=mimic_cxr_path, transform=transform)
@@ -212,9 +212,9 @@ def show_mask_on_image(img, masky, masks):
     print("Successfully output an image!")
     return 
     
-def gen_mask(images, target_labels):
-    zone_y = generate_zone_masks_Y(images[:1], int(target_labels[0])) # need to fix
-    zone_s = generate_zone_masks_Z(images[:1], 0) # need to fix
+def gen_mask(images, target_labels, sensitive_labels):
+    zone_y = generate_zone_masks_Y(images[:1], int(target_labels[0]))
+    zone_s = generate_zone_masks_Z(images[:1], 0)
     threshold_y = zone_y.max() * args.threshold
     threshold_s = zone_s.max() * args.threshold
     tripartite_mask_y = (zone_y > threshold_y)
@@ -258,7 +258,7 @@ def adversarial_round(noise_strength=0.1):
         sensitive_labels = sensitive_labels.to(device)
         
         if not args.no_cam:
-            tripartite_mask = gen_mask(images, target_labels)
+            tripartite_mask = gen_mask(images, target_labels, sensitive_labels)
         else:
             tripartite_mask = np.ones((1, 224, 224))
             

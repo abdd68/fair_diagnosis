@@ -75,9 +75,10 @@ class Discriminator(nn.Module):
         self.fc1 = nn.Linear(128 * 28 * 28, 256)  # 假设输入为 224x224
         self.fc2 = nn.Linear(256, 1)
         
-    def forward(self, x, label):
+    def forward(self, x, label = None):
         # 卷积层 + 批归一化 + 激活 + 池化
-        x = x + label.view(-1, 1, 1, 1)
+        if not (label is None):
+            x = x + label.view(-1, 1, 1, 1)
         x = self.pool(F.relu(self.bn1(self.conv1(x))))
         x = self.pool(F.relu(self.bn2(self.conv2(x))))
         x = self.pool(F.relu(self.bn3(self.conv3(x))))
