@@ -36,14 +36,6 @@ class Deployed_model(nn.Module):
             nn.ReLU(),
             nn.Linear(256, num_classes)
         )
-        
-        # # 判别器 (D)
-        # self.discriminator = nn.Sequential(
-        #     nn.Linear(resnet.fc.in_features, 256),
-        #     nn.ReLU(),
-        #     nn.Linear(256, 1),
-        #     nn.Sigmoid()
-        # )
 
     def forward(self, x):
         # 提取特征
