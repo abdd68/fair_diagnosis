@@ -1,17 +1,17 @@
-from pytorch_grad_cam import GradCAM
-from torchvision.models import resnet50
- 
-# 加载预训练的 ResNet50 模型
-model = resnet50(pretrained=True)
- 
-# 选择目标层
-target_layers = [model.layer4[-1]]
- 
-# 创建 GradCAM 对象
-cam = GradCAM(model=model, target_layers=target_layers)
- 
-# 输入图像（假设您已经有一个输入张量 input_tensor）
-# grayscale_cam = cam(input_tensor=input_tensor)
- 
-# 打印 GradCAM 对象
-print(cam)
+python adv.py --num_epochs 50 --noise_strength 0.1 --pretrain_epochs 10 -lr 1e-4 --debug --feature n01
+python adv.py --num_epochs 50 --noise_strength 0.2 --pretrain_epochs 10 -lr 1e-4 --debug --feature n02
+python adv.py --num_epochs 50 --noise_strength 0.3 --pretrain_epochs 10 -lr 1e-4 --debug --feature n03
+python adv.py --num_epochs 50 --noise_strength 0.4 --pretrain_epochs 10 -lr 1e-4 --debug --feature n04
+python adv.py --num_epochs 50 --noise_strength 0.5 --pretrain_epochs 10 -lr 1e-4 --debug --feature n05
+
+python adv.py --num_epochs 50 --noise_strength 0.1 --pretrain_epochs 10 -lr 1e-4 --debug --feature ch_n01 --dataset chexpert
+python adv.py --num_epochs 50 --noise_strength 0.2 --pretrain_epochs 10 -lr 1e-4 --debug --feature ch_n02 --dataset chexpert
+python adv.py --num_epochs 50 --noise_strength 0.3 --pretrain_epochs 10 -lr 1e-4 --debug --feature ch_n03 --dataset chexpert
+python adv.py --num_epochs 50 --noise_strength 0.4 --pretrain_epochs 10 -lr 1e-4 --debug --feature ch_n04 --dataset chexpert
+python adv.py --num_epochs 50 --noise_strength 0.5 --pretrain_epochs 10 -lr 1e-4 --debug --feature ch_n05 --dataset chexpert
+
+python adv.py --num_epochs 50 --noise_strength 0.1 --pretrain_epochs 10 -lr 1e-4 --debug --feature tcga_n01 --dataset tcga
+python adv.py --num_epochs 50 --noise_strength 0.2 --pretrain_epochs 10 -lr 1e-4 --debug --feature tcga_n02 --dataset tcga
+python adv.py --num_epochs 50 --noise_strength 0.3 --pretrain_epochs 10 -lr 1e-4 --debug --feature tcga_n03 --dataset tcga
+python adv.py --num_epochs 50 --noise_strength 0.4 --pretrain_epochs 10 -lr 1e-4 --debug --feature tcga_n04 --dataset tcga
+python adv.py --num_epochs 50 --noise_strength 0.5 --pretrain_epochs 10 -lr 1e-4 --debug --feature tcga_n05 --dataset tcga

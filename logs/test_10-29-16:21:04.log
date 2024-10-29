@@ -1,0 +1,21 @@
+2024-10-29 16:21:04,674: Namespace(device='cuda', alpha=0.8, beta=1.0, lr=0.0001, pretrain_epochs=0, num_epochs=5, model='vit', noise_strength=0.1, no_adversarial=False, visualize=False, debug=False, no_cam=False, seed=42, threshold=0.5, positive_weight=1.05, dataset='mimic-cxr', feature='test')
+2024-10-29 16:21:04,774: Number of GPUs available: 8
+2024-10-29 16:21:07,138: Successfully load model!
+2024-10-29 16:21:08,243: Number of samples in training dataset: 81999 | testing dataset:9111
+2024-10-29 16:21:08,244: positive weight: 16.1492
+2024-10-29 16:21:55,018: Test Loss: 0.6846, Accuracy: 0.9363, F1: 0.0236, AUC: 0.5509
+2024-10-29 16:21:55,018: DP:0.00, EO:0.01
+2024-10-29 16:22:09,047: Step [20/2563], Loss D: 0.8664, Loss G: -0.3169
+2024-10-29 16:22:16,867: Step [40/2563], Loss D: 0.8157, Loss G: 0.1907
+2024-10-29 16:22:24,766: Step [60/2563], Loss D: 0.6605, Loss G: -0.3894
+2024-10-29 16:22:32,567: Step [80/2563], Loss D: 1.2106, Loss G: -0.0911
+2024-10-29 16:22:40,242: Step [100/2563], Loss D: 1.0513, Loss G: -0.8700
+2024-10-29 16:22:47,996: Step [120/2563], Loss D: 0.7833, Loss G: -0.0479
+2024-10-29 16:22:55,812: Step [140/2563], Loss D: 0.5314, Loss G: -0.3923
+2024-10-29 16:23:03,489: Step [160/2563], Loss D: 0.8352, Loss G: -0.2061
+2024-10-29 16:23:11,308: Step [180/2563], Loss D: 0.8247, Loss G: -0.3152
+2024-10-29 16:23:18,995: Step [200/2563], Loss D: 0.8228, Loss G: 0.0279
+2024-10-29 16:23:26,772: Step [220/2563], Loss D: 1.0025, Loss G: 0.0557
+2024-10-29 16:23:34,686: Step [240/2563], Loss D: 0.3717, Loss G: -0.7950
+2024-10-29 16:23:42,475: Step [260/2563], Loss D: 0.7843, Loss G: -0.4807
+2024-10-29 16:23:50,114: Step [280/2563], Loss D: 0.3251, Loss G: 0.3948

@@ -59,6 +59,160 @@ class MimicCXRDataset(Dataset):
         # 计算正负样本比
         neg_pos_ratio = float(negative_count / positive_count)
         return neg_pos_ratio
+    
+    
+class CheXpertDataset(Dataset):
+    def __init__(self, csv_file, root_dir, transform=None, debug=False):
+        # 读取CSV文件
+        self.data_frame = pd.read_csv(csv_file)
+        # self.data_frame = self.data_frame.dropna(subset=["Atelectasis"]).reset_index(drop=True)
+        self.data_frame["Atelectasis"] = self.data_frame["Pneumonia"].fillna(0)
+        self.data_frame["Atelectasis"] = self.data_frame["Atelectasis"].replace(-1, 0)
+        # 如果是调试模式，仅取前10%的数据
+        if debug:
+            self.data_frame = self.data_frame.sample(frac=0.1, random_state=42).reset_index(drop=True)
+        
+        self.root_dir = root_dir
+        self.transform = transform
+
+    def __len__(self):
+        return len(self.data_frame)
+
+    def __getitem__(self, idx):
+        # 获取图像路径
+        img_path = os.path.join(self.root_dir, self.data_frame.iloc[idx, 0])
+        image = Image.open(img_path).convert('RGB')
+        
+        # 获取性别信息并转换为数字
+        gender_label = self.data_frame.iloc[idx, 1]
+        gender_label = np.float32(1.0) if gender_label == 'Male' else np.float32(0.0)  # 男性为1，女性为0
+
+        # 获取Pneumonia的标签
+        target_label = self.data_frame.iloc[idx, 13]
+        target_label = int(target_label)
+        
+        if self.transform:
+            image = self.transform(image)
+        
+        return image, target_label, gender_label
+    
+    def calculate_neg_pos_ratio(self):
+        # 计算Pneumonia（target_label）的正负样本比
+        positive_count = (self.data_frame["Atelectasis"] == 1).sum()
+        negative_count = (self.data_frame["Atelectasis"] == 0).sum()
+
+        # 防止负样本数为0导致除以0错误
+        if positive_count == 0:
+            return float('inf')  # 如果没有正样本，返回无穷大
+
+        # 计算负正样本比
+        neg_pos_ratio = float(negative_count / positive_count)
+        return neg_pos_ratio
+    
+from sklearn.model_selection import train_test_split
+import pydicom
+class TcgaDataset(Dataset):
+    def __init__(self, csv_file, root_dir, transform=None, debug=False, training = False):
+        # 读取CSV文件
+        # 1. 读取 metadata.csv
+        self.training = training
+        metadata_path = csv_file  # 请替换为实际的 metadata.csv 路径
+        metadata = pd.read_csv(metadata_path)
+
+        # 2. 读取临床数据文件
+        clinical_data_path = '../datasets/TCGA-LUAD/gdc_download_clinical_luad/nationwidechildrens.org_clinical_patient_luad.txt'
+        clinical_data = pd.read_csv(clinical_data_path, sep="\t")
+
+        # 3. 筛选出临床数据中包含 bcr_patient_barcode 和 ajcc_pathologic_tumor_stage 列的数据
+        clinical_data_reduced = clinical_data[['gender','bcr_patient_barcode', 'ajcc_pathologic_tumor_stage']]
+        
+        # 4. 合并 metadata 和 clinical_data_reduced，使用 bcr_patient_barcode 作为连接键
+        merged_data = pd.merge(metadata, clinical_data_reduced, left_on="Subject ID", right_on="bcr_patient_barcode", how="left")
+        merged_data = merged_data.dropna(subset=['bcr_patient_barcode', 'ajcc_pathologic_tumor_stage'])
+        
+        stages_to_zero = ['Stage IA', 'Stage IB', 'Stage IIA', 'Stage IIB', '[Discrepancy]']
+        merged_data['ajcc_pathologic_tumor_stage'] = merged_data['ajcc_pathologic_tumor_stage'].apply(
+            lambda x: 0 if x in stages_to_zero else 1)
+        
+        # 假设 merged_data 已经加载
+        expanded_data = []
+
+        # 遍历每一行，按 `Number of Images` 将图片集拆分成单独的行
+        for idx, row in merged_data.iterrows():
+            num_images = int(row["Number of Images"])
+            base_location = row["File Location"].replace("\\", "/")
+
+            # 检查 File Location 是否是一个有效的目录
+            list_dir = os.path.join(root_dir,base_location)
+            if os.path.isdir(list_dir):
+                image_files = os.listdir(list_dir)
+                # 按 `Number of Images` 限制图片数量
+                image_files = image_files[:num_images]
+                
+                # 为每个图像创建一个新行
+                for img_file in image_files:
+                    new_row = row.copy()
+                    # 更新 File Location 为具体图片的路径
+                    new_row["File Location"] = os.path.join(base_location, img_file)
+                    expanded_data.append(new_row)
+                
+
+        # 构建扩展后的 DataFrame
+        merged_data = pd.DataFrame(expanded_data)
+        
+        
+        if debug:
+            train_metadata, test_metadata = train_test_split(merged_data, test_size=0.01, train_size = 0.09, random_state=42)
+        else:
+            train_metadata, test_metadata = train_test_split(merged_data, test_size=0.1, train_size = 0.9, random_state=42)
+            
+        if training:
+            self.data_frame = train_metadata
+        else:
+            self.data_frame = test_metadata
+        self.root_dir = root_dir
+        self.transform = transform
+        
+    def __len__(self):
+        return len(self.data_frame)
+
+    def __getitem__(self, idx):
+        # 获取行数据
+        row = self.data_frame.iloc[idx]
+        
+        # 获取图像路径
+        img_path = os.path.join(self.root_dir, row["File Location"])
+        
+        # 加载图像
+        dicom = pydicom.dcmread(img_path)
+        img_array = dicom.pixel_array
+        image = Image.fromarray(img_array).convert('RGB')
+        
+        # 应用变换
+        if self.transform:
+            image = self.transform(image)
+        
+        # 提取标签和元数据
+        ajcc_stage = int(row["ajcc_pathologic_tumor_stage"])  # 假设是整数标签
+        gender = row["gender"]  # 示例：性别字段
+        gender_label = np.float32(1.0) if gender == 'MALE' else np.float32(0.0)
+        # 你可以根据需要提取更多的元数据字段
+        
+        return image, ajcc_stage, gender_label  # 返回图像、标签和其他元数据
+    
+    
+    def calculate_neg_pos_ratio(self):
+        # 计算Pneumonia（target_label）的正负样本比
+        positive_count = (self.data_frame["ajcc_pathologic_tumor_stage"] == 1).sum()
+        negative_count = (self.data_frame["ajcc_pathologic_tumor_stage"] == 0).sum()
+
+        # 防止负样本数为0导致除以0错误
+        if positive_count == 0:
+            return float('inf')  # 如果没有正样本，返回无穷大
+
+        # 计算负正样本比
+        neg_pos_ratio = float(negative_count / positive_count)
+        return neg_pos_ratio
 
 class NIHCXRDataset(Dataset):
     def __init__(self, image_paths, data_labels, gender_labels, root_dir, transforms=None):

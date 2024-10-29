@@ -1,0 +1,11 @@
+2024-10-29 15:27:08,999: Namespace(device='cuda', alpha=0.8, beta=1.0, lr=0.0001, pretrain_epochs=5, num_epochs=5, model='vit', noise_strength=0.1, no_adversarial=False, visualize=False, debug=False, no_cam=False, seed=42, threshold=0.5, positive_weight=1.05, dataset='mimic-cxr', feature='test')
+2024-10-29 15:27:09,109: Number of GPUs available: 8
+2024-10-29 15:27:12,593: Number of samples in training dataset: 81999 | testing dataset:9111
+2024-10-29 15:27:12,595: positive weight: 16.1492
+2024-10-29 15:34:39,689: Final Training Loss: 0.7085, Accuracy: 0.6493
+2024-10-29 15:41:54,745: Final Training Loss: 0.6992, Accuracy: 0.6956
+2024-10-29 15:49:12,354: Final Training Loss: 0.6957, Accuracy: 0.6965
+2024-10-29 15:56:31,599: Final Training Loss: 0.6958, Accuracy: 0.7179
+2024-10-29 16:03:51,078: Final Training Loss: 0.6949, Accuracy: 0.7186
+2024-10-29 16:04:37,617: Test Loss: 0.6845, Accuracy: 0.9360, F1: 0.0235, AUC: 0.5510
+2024-10-29 16:04:37,617: DP:0.00, EO:0.01

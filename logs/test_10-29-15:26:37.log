@@ -1,0 +1,2 @@
+2024-10-29 15:26:37,626: Namespace(device='cuda', alpha=0.8, beta=1.0, lr=0.0001, pretrain_epochs=5, num_epochs=5, model='vit', noise_strength=0.1, no_adversarial=False, visualize=False, debug=False, no_cam=False, seed=42, threshold=0.5, positive_weight=1.05, dataset='mimic-cxr', feature='test')
+2024-10-29 15:26:37,725: Number of GPUs available: 8
