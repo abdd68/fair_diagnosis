@@ -1,7 +1,0 @@
-2024-10-29 16:13:58,428: Namespace(device='cuda', alpha=0.8, beta=1.0, lr=0.0001, pretrain_epochs=0, num_epochs=5, model='vit', noise_strength=0.1, no_adversarial=False, visualize=False, debug=False, no_cam=False, seed=42, threshold=0.5, positive_weight=1.05, dataset='mimic-cxr', feature='test')
-2024-10-29 16:13:58,528: Number of GPUs available: 8
-2024-10-29 16:14:00,853: Successfully load model!
-2024-10-29 16:14:01,968: Number of samples in training dataset: 81999 | testing dataset:9111
-2024-10-29 16:14:01,969: positive weight: 16.1492
-2024-10-29 16:14:48,854: Test Loss: 0.6845, Accuracy: 0.9363, F1: 0.0236, AUC: 0.5510
-2024-10-29 16:14:48,854: DP:0.00, EO:0.01

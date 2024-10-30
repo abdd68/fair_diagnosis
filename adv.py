@@ -18,56 +18,8 @@ import time
 from grad_rollout import VITAttentionGradRollout # !!!
 
 # 检查 GPU 是否可用
-os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2,3,4,5,6,7"
+os.environ["CUDA_VISIBLE_DEVICES"] = "1,2,3,4,5,6,7"
 # 设置命令行参数
-parser = argparse.ArgumentParser(description='Adversarial Training with Fairness Testing')
-parser.add_argument('--device', type=str, default='cuda', help='Device to use for training (e.model., "cuda" or "cpu")')
-parser.add_argument('--alpha', type=float, default=0.8, help='Weight for the fairness loss term')
-parser.add_argument('--beta', type=float, default=1.0, help='Weight for the task loss term')
-parser.add_argument('-lr','--lr', type=float, default=8e-6, help='Weight for the task loss term')
-parser.add_argument('--pretrain_epochs', type=int, default=10, help='Number of epochs for training')
-parser.add_argument('--num_epochs', type=int, default=10, help='Number of epochs for training')
-
-parser.add_argument('--model', type=str, default='resnet', help='model type, choose from resnet and vit')
-parser.add_argument('-n', '--noise_strength', type=float, default=0.1, help='Strength of noise added by generator G')
-parser.add_argument('--no_adversarial', action='store_true', help='Enable adversarial training') # is false if not set
-parser.add_argument('-v', '--visualize', action='store_true', help='Enable visualization') # is false if not set
-parser.add_argument('--debug', action='store_true', help='Enable adversarial training') # is false if not set
-parser.add_argument('--no_cam', action='store_true', help='Enable adversarial training') # is false if not set
-parser.add_argument('-s','--seed', type=int, default=42, help='seed used for training')
-parser.add_argument('--threshold', type=float, default=0.5, help='threshold for masks')
-parser.add_argument('-pr', '--positive_weight', type=float, default=1.05, help='positive_weight')
-parser.add_argument('-d', '--dataset', type=str, default='mimic-cxr', help = 'choose from mimic-cxr, chexpert and tcga')
-parser.add_argument('-f', '--feature', type=str, default='test', help = 'choose from mimic-cxr, chexpert and tcga')
-args = parser.parse_args()
-
-logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO,  
-                    filename='logs/' + args.feature +'_'+ time.strftime('%m-%d-%H:%M:%S',time.localtime(time.time())) + '.log',
-                    filemode='w',  
-                    format='%(asctime)s: %(message)s'
-                    )
-logger.info(args)
-# 设置设备
-device = torch.device(args.device if torch.cuda.is_available() else "cpu")
-num_gpus = torch.cuda.device_count()
-logger.info(f"Number of GPUs available: {num_gpus}")
-
-# 设置参数
-alpha = args.alpha
-beta = args.beta
-noise_strength = args.noise_strength
-
-# 数据预处理和加载
-transform = transforms.Compose([
-    transforms.Resize((224, 224)),  # 将图像大小调整为 224x224
-    transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]) # 标准化
-])
-invTrans = transforms.Compose([ transforms.Normalize(mean = [ 0., 0., 0. ],
-	                                                 std = [ 1/0.229, 1/0.224, 1/0.225 ]),
-	                            transforms.Normalize(mean = [ -0.485, -0.456, -0.406 ],
-	                                                 std = [ 1., 1., 1. ]),])
 
 def process_dataset():
     if args.dataset == 'mimic-cxr':
@@ -129,48 +81,7 @@ def generate_zone_masks_Z(images, labels):
     zone_mask = gradcam_Z(input_tensor=images, targets=targets)
     return zone_mask
 
-# 模型初始化并移动到 GPU（如果可用），并使用 DataParallel 包裹模型
-if args.model == 'resnet':
-    model = Resnet18(num_classes = 2).to(device)
-elif args.model == 'vit':
-    model = VisionTransformer(num_classes = 2).to(device)
-G = Generator().to(device)
-D = Discriminator().to(device)
-
-if args.model == 'resnet':
-    gradcam_Y = GradCAM(model=model, target_layers=[model.layer4[1].conv2], use_cuda=torch.cuda.is_available())
-    gradcam_Z = GradCAM(model=D, target_layers=[D.conv2], use_cuda=torch.cuda.is_available())
-elif args.model == 'vit':
-    gradcam_Y = VITAttentionGradRollout(model, discard_ratio=0.9)
-    gradcam_Z = GradCAM(model=D, target_layers=[D.conv2], use_cuda=torch.cuda.is_available())
-
-# torch.backends.cudnn.enabled = False
-# 如果有多张 GPU，使用 DataParallel 包裹模型
-if num_gpus > 1:
-    model = nn.DataParallel(model)
-    G = nn.DataParallel(G)
-
-if args.pretrain_epochs <= 0:
-    model.load_state_dict(torch.load(f'models/model_{args.feature}.pth'))
-    logger.info("Successfully load model!")
-train_dataset, test_dataset, train_loader, test_loader = process_dataset()
-# 损失函数和优化器
-pw = args.positive_weight * train_dataset.calculate_neg_pos_ratio()
-class_weights = torch.tensor([1.0, pw]).to(device)  # 权重为 [阴性, 阳性]
-logger.info(f"positive weight: {pw:.4f}")
-criterion_task = nn.CrossEntropyLoss(weight=class_weights)
-criterion_fair = nn.BCELoss()
-
-optimizer_G = optim.AdamW(G.parameters(), lr=1.1 * args.lr, weight_decay=1e-4)
-optimizer_D = optim.AdamW(D.parameters(), lr=args.lr, weight_decay=1e-4)
-optimizer_model = optim.SGD(model.parameters(), lr=4e-4)
-
-
-scheduler_G = optim.lr_scheduler.StepLR(optimizer_G, step_size=10, gamma=0.5)
-scheduler_D = optim.lr_scheduler.StepLR(optimizer_D, step_size=10, gamma=0.5)
-scheduler_model = optim.lr_scheduler.StepLR(optimizer_model, step_size=10, gamma=0.5)
-
-def train_round():
+def train_round(flag):
     model.train()
     G.eval()
     D.eval()
@@ -188,6 +99,8 @@ def train_round():
 
         # 前向传播
         outputs = model(images)  # 提取特征
+        if flag:
+            flag = 0
         # 计算损失
         loss = criterion_task(outputs, target_labels)
         
@@ -485,18 +398,112 @@ def acc_test_round(model, model_G, noise_strength=0.1):
     
 #     return accuracy
 
-for epoch in range(args.pretrain_epochs):
-    train_round()
-    scheduler_model.step()
-    
-acc_test_round(model, G, noise_strength)
-for epoch in range(args.num_epochs):
-    adversarial_round(noise_strength)
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='Adversarial Training with Fairness Testing')
+    parser.add_argument('--device', type=str, default='cuda', help='Device to use for training (e.model., "cuda" or "cpu")')
+    parser.add_argument('--alpha', type=float, default=0.8, help='Weight for the fairness loss term')
+    parser.add_argument('--beta', type=float, default=1.0, help='Weight for the task loss term')
+    parser.add_argument('-lr','--lr', type=float, default=8e-6, help='Weight for the task loss term')
+    parser.add_argument('--pretrain_epochs', type=int, default=10, help='Number of epochs for training')
+    parser.add_argument('--num_epochs', type=int, default=10, help='Number of epochs for training')
+
+    parser.add_argument('--model', type=str, default='resnet', help='model type, choose from resnet and vit')
+    parser.add_argument('-n', '--noise_strength', type=float, default=0.1, help='Strength of noise added by generator G')
+    parser.add_argument('--no_adversarial', action='store_true', help='Enable adversarial training') # is false if not set
+    parser.add_argument('-v', '--visualize', action='store_true', help='Enable visualization') # is false if not set
+    parser.add_argument('--debug', action='store_true', help='Enable adversarial training') # is false if not set
+    parser.add_argument('--no_cam', action='store_true', help='Enable adversarial training') # is false if not set
+    parser.add_argument('-s','--seed', type=int, default=42, help='seed used for training')
+    parser.add_argument('--threshold', type=float, default=0.5, help='threshold for masks')
+    parser.add_argument('-pr', '--positive_weight', type=float, default=1., help='positive_weight')
+    parser.add_argument('-d', '--dataset', type=str, default='mimic-cxr', help = 'choose from mimic-cxr, chexpert and tcga')
+    parser.add_argument('-f', '--feature', type=str, default='test', help = 'choose from mimic-cxr, chexpert and tcga')
+    args = parser.parse_args()
+
+    logger = logging.getLogger(__name__)
+    logging.basicConfig(level=logging.INFO,  
+                        filename='logs/' + args.feature +'_'+ time.strftime('%m-%d-%H:%M:%S',time.localtime(time.time())) + '.log',
+                        filemode='w',  
+                        format='%(asctime)s: %(message)s'
+                        )
+    logger.info(args)
+    # 设置设备
+    device = torch.device(args.device if torch.cuda.is_available() else "cpu")
+    num_gpus = torch.cuda.device_count()
+    logger.info(f"Number of GPUs available: {num_gpus}")
+
+    # 设置参数
+    alpha = args.alpha
+    beta = args.beta
+    noise_strength = args.noise_strength
+
+    # 数据预处理和加载
+    transform = transforms.Compose([
+        transforms.Resize((224, 224)),  # 将图像大小调整为 224x224
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]) # 标准化
+    ])
+    invTrans = transforms.Compose([ transforms.Normalize(mean = [ 0., 0., 0. ],
+                                                        std = [ 1/0.229, 1/0.224, 1/0.225 ]),
+                                    transforms.Normalize(mean = [ -0.485, -0.456, -0.406 ],
+                                                        std = [ 1., 1., 1. ]),])
+    # 模型初始化并移动到 GPU（如果可用），并使用 DataParallel 包裹模型
+    if args.model == 'resnet':
+        model = Resnet18(num_classes = 2).to(device)
+    elif args.model == 'vit':
+        model = VisionTransformer(num_classes = 2).to(device)
+    G = Generator().to(device)
+    D = Discriminator().to(device)
+
+    if args.model == 'resnet':
+        gradcam_Y = GradCAM(model=model, target_layers=[model.layer4[1].conv2], use_cuda=torch.cuda.is_available())
+        gradcam_Z = GradCAM(model=D, target_layers=[D.conv2], use_cuda=torch.cuda.is_available())
+    elif args.model == 'vit':
+        gradcam_Y = VITAttentionGradRollout(model, discard_ratio=0.9)
+        gradcam_Z = GradCAM(model=D, target_layers=[D.conv2], use_cuda=torch.cuda.is_available())
+
+    # torch.backends.cudnn.enabled = False
+    # 如果有多张 GPU，使用 DataParallel 包裹模型
+    if num_gpus > 1:
+        model = nn.DataParallel(model)
+        G = nn.DataParallel(G)
+
+    if args.pretrain_epochs <= 0:
+        model.load_state_dict(torch.load(f'models/model_{args.feature}.pth'))
+        logger.info("Successfully load model!")
+    train_dataset, test_dataset, train_loader, test_loader = process_dataset()
+    # 损失函数和优化器
+    pw = args.positive_weight * train_dataset.calculate_neg_pos_ratio()
+    class_weights = torch.tensor([1.0, pw]).to(device)  # 权重为 [阴性, 阳性]
+    logger.info(f"positive weight: {pw:.4f}")
+    criterion_task = nn.CrossEntropyLoss(weight=class_weights)
+    criterion_fair = nn.BCELoss()
+
+    optimizer_G = optim.AdamW(G.parameters(), lr=1.1 * args.lr, weight_decay=1e-4)
+    optimizer_D = optim.AdamW(D.parameters(), lr=args.lr, weight_decay=1e-4)
+    if args.model == 'resnet':
+        optimizer_model = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
+    elif args.model == 'vit':
+        optimizer_model = optim.AdamW(model.parameters(), lr=args.lr)
+
+    scheduler_G = optim.lr_scheduler.StepLR(optimizer_G, step_size=10, gamma=0.5)
+    scheduler_D = optim.lr_scheduler.StepLR(optimizer_D, step_size=10, gamma=0.5)
+    scheduler_model = optim.lr_scheduler.StepLR(optimizer_model, step_size=10, gamma=0.5)
+    for epoch in range(args.pretrain_epochs):
+        flag = 0
+        if epoch >= 5:
+            flag = 1
+        train_round(flag)
+        scheduler_model.step()
+        
     acc_test_round(model, G, noise_strength)
-    scheduler_G.step()
-    scheduler_D.step()
+    for epoch in range(args.num_epochs):
+        adversarial_round(noise_strength)
+        acc_test_round(model, G, noise_strength)
+        scheduler_G.step()
+        scheduler_D.step()
 
-    # fairness_acc_test_round(noise_strength)
-    
+        # fairness_acc_test_round(noise_strength)
+        
 
-logger.info("Training completed.")
+    logger.info("Training completed.")
