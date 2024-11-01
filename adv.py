@@ -18,7 +18,7 @@ import time
 from grad_rollout import VITAttentionGradRollout # !!!
 
 # 检查 GPU 是否可用
-os.environ["CUDA_VISIBLE_DEVICES"] = "1,2,3,4,5,6,7"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2,3,4,5,6,7"
 # 设置命令行参数
 
 def process_dataset():
@@ -100,6 +100,8 @@ def train_round(flag):
         # 前向传播
         outputs = model(images)  # 提取特征
         if flag:
+            print(outputs)
+            print(target_labels)
             flag = 0
         # 计算损失
         loss = criterion_task(outputs, target_labels)
@@ -207,7 +209,7 @@ def adversarial_round(noise_strength=0.1):
         if args.no_adversarial:
             perturbed_images = images
         else:
-            noise = process_mask(G(images), tripartite_mask)  # 控制扰动强度
+            noise = process_mask(G(images), tripartite_mask)
             if args.visualize:
                 visualize_noise(noise)
                 
@@ -280,8 +282,8 @@ def acc_test_round(model, model_G, noise_strength=0.1):
 
             # 使用生成器 G 生成噪声并加到图像上
             if not args.no_adversarial:
-                noise = model_G(images) * noise_strength  # 控制扰动强度
-                perturbed_images = torch.clamp(images + noise, -4, 4)
+                noise = model_G(images)  # 控制扰动强度
+                perturbed_images = torch.clamp((1 - noise_strength) * images + noise_strength * noise, -4, 4)
             else:
                 perturbed_images = images
 
@@ -451,16 +453,16 @@ if __name__ == '__main__':
     if args.model == 'resnet':
         model = Resnet18(num_classes = 2).to(device)
     elif args.model == 'vit':
-        model = VisionTransformer(num_classes = 2).to(device)
+        model = VisionTransformer(depth = 1, num_classes = 2).to(device)
     G = Generator().to(device)
     D = Discriminator().to(device)
 
     if args.model == 'resnet':
-        gradcam_Y = GradCAM(model=model, target_layers=[model.layer4[1].conv2], use_cuda=torch.cuda.is_available())
-        gradcam_Z = GradCAM(model=D, target_layers=[D.conv2], use_cuda=torch.cuda.is_available())
+        gradcam_Y = GradCAM(model=model, target_layers=[model.layer4[1].conv2])
+        gradcam_Z = GradCAM(model=D, target_layers=[D.conv2])
     elif args.model == 'vit':
         gradcam_Y = VITAttentionGradRollout(model, discard_ratio=0.9)
-        gradcam_Z = GradCAM(model=D, target_layers=[D.conv2], use_cuda=torch.cuda.is_available())
+        gradcam_Z = GradCAM(model=D, target_layers=[D.conv2])
 
     # torch.backends.cudnn.enabled = False
     # 如果有多张 GPU，使用 DataParallel 包裹模型
@@ -491,7 +493,7 @@ if __name__ == '__main__':
     scheduler_model = optim.lr_scheduler.StepLR(optimizer_model, step_size=10, gamma=0.5)
     for epoch in range(args.pretrain_epochs):
         flag = 0
-        if epoch >= 5:
+        if epoch >= 1:
             flag = 1
         train_round(flag)
         scheduler_model.step()
