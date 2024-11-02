@@ -10,7 +10,7 @@ import numpy as np
 from tqdm import tqdm
 import argparse
 from pytorch_grad_cam import GradCAM
-from lib.resnet import Generator, Discriminator, Resnet18
+from lib.resnet import Generator, Discriminator, Resnet18, Resnet50
 from lib.vision_transformer import VisionTransformer
 from import_datasets import MimicCXRDataset, CheXpertDataset, TcgaDataset
 import logging
@@ -18,7 +18,7 @@ import time
 from grad_rollout import VITAttentionGradRollout # !!!
 
 # 检查 GPU 是否可用
-os.environ["CUDA_VISIBLE_DEVICES"] = "1,2,3,4,5,6,7"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2,3,4,5,6,7"
 # 设置命令行参数
 
 def process_dataset():
@@ -69,7 +69,7 @@ def process_dataset():
 from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
 
 def generate_zone_masks_Y(images, labels):
-    if args.model == 'resnet':
+    if args.model == 'resnet18' or args.model == 'resnet50':
         targets = [ClassifierOutputTarget(labels)]
         zone_mask = gradcam_Y(input_tensor=images, targets=targets)
     elif args.model == 'vit':
@@ -100,6 +100,8 @@ def train_round(flag):
         # 前向传播
         outputs = model(images)  # 提取特征
         if flag:
+            print(outputs)
+            print(target_labels)
             flag = 0
         # 计算损失
         loss = criterion_task(outputs, target_labels)
@@ -207,7 +209,7 @@ def adversarial_round(noise_strength=0.1):
         if args.no_adversarial:
             perturbed_images = images
         else:
-            noise = process_mask(G(images), tripartite_mask)  # 控制扰动强度
+            noise = process_mask(G(images), tripartite_mask)
             if args.visualize:
                 visualize_noise(noise)
                 
@@ -280,8 +282,8 @@ def acc_test_round(model, model_G, noise_strength=0.1):
 
             # 使用生成器 G 生成噪声并加到图像上
             if not args.no_adversarial:
-                noise = model_G(images) * noise_strength  # 控制扰动强度
-                perturbed_images = torch.clamp(images + noise, -4, 4)
+                noise = model_G(images)  # 控制扰动强度
+                perturbed_images = torch.clamp((1 - noise_strength) * images + noise_strength * noise, -4, 4)
             else:
                 perturbed_images = images
 
@@ -342,7 +344,7 @@ def acc_test_round(model, model_G, noise_strength=0.1):
     logger.info(f"Test Loss: {avg_loss:.4f}, Accuracy: {accuracy:.4f}, F1: {f1:.4f}, AUC: {auc:.4f}")
     DP = abs(count_a_yhat1/count_a - count_na_yhat1/count_na)
     EO = abs(count_a_y1_yhat1/count_a_y1 - count_na_y1_yhat1/count_na_y1)
-    logger.info(f"DP:{DP:.2f}, EO:{EO:.2f}")
+    logger.info(f"DP:{DP:.4f}, EO:{EO:.4f}")
 
     return avg_loss, accuracy
  
@@ -407,7 +409,7 @@ if __name__ == '__main__':
     parser.add_argument('--pretrain_epochs', type=int, default=10, help='Number of epochs for training')
     parser.add_argument('--num_epochs', type=int, default=10, help='Number of epochs for training')
 
-    parser.add_argument('--model', type=str, default='resnet', help='model type, choose from resnet and vit')
+    parser.add_argument('--model', type=str, default='resnet18', help='model type, choose from resnet18, resnet50 and vit')
     parser.add_argument('-n', '--noise_strength', type=float, default=0.1, help='Strength of noise added by generator G')
     parser.add_argument('--no_adversarial', action='store_true', help='Enable adversarial training') # is false if not set
     parser.add_argument('-v', '--visualize', action='store_true', help='Enable visualization') # is false if not set
@@ -448,19 +450,24 @@ if __name__ == '__main__':
                                     transforms.Normalize(mean = [ -0.485, -0.456, -0.406 ],
                                                         std = [ 1., 1., 1. ]),])
     # 模型初始化并移动到 GPU（如果可用），并使用 DataParallel 包裹模型
-    if args.model == 'resnet':
+    if args.model == 'resnet18':
         model = Resnet18(num_classes = 2).to(device)
+    elif args.model == 'resnet50':
+        model = Resnet50(num_classes = 2).to(device)
     elif args.model == 'vit':
-        model = VisionTransformer(num_classes = 2).to(device)
+        model = VisionTransformer(depth = 1, num_classes = 2).to(device)
     G = Generator().to(device)
     D = Discriminator().to(device)
 
-    if args.model == 'resnet':
-        gradcam_Y = GradCAM(model=model, target_layers=[model.layer4[1].conv2], use_cuda=torch.cuda.is_available())
-        gradcam_Z = GradCAM(model=D, target_layers=[D.conv2], use_cuda=torch.cuda.is_available())
+    if args.model == 'resnet18':
+        gradcam_Y = GradCAM(model=model, target_layers=[model.layer4[1].conv2])
+        gradcam_Z = GradCAM(model=D, target_layers=[D.conv2])
+    elif args.model == 'resnet50':
+        gradcam_Y = GradCAM(model=model, target_layers=[model.layer4[2].conv3])
+        gradcam_Z = GradCAM(model=D, target_layers=[D.conv2])
     elif args.model == 'vit':
         gradcam_Y = VITAttentionGradRollout(model, discard_ratio=0.9)
-        gradcam_Z = GradCAM(model=D, target_layers=[D.conv2], use_cuda=torch.cuda.is_available())
+        gradcam_Z = GradCAM(model=D, target_layers=[D.conv2])
 
     # torch.backends.cudnn.enabled = False
     # 如果有多张 GPU，使用 DataParallel 包裹模型
@@ -481,7 +488,7 @@ if __name__ == '__main__':
 
     optimizer_G = optim.AdamW(G.parameters(), lr=1.1 * args.lr, weight_decay=1e-4)
     optimizer_D = optim.AdamW(D.parameters(), lr=args.lr, weight_decay=1e-4)
-    if args.model == 'resnet':
+    if args.model == 'resnet18' or args.model == 'resnet50':
         optimizer_model = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
     elif args.model == 'vit':
         optimizer_model = optim.AdamW(model.parameters(), lr=args.lr)
@@ -491,7 +498,7 @@ if __name__ == '__main__':
     scheduler_model = optim.lr_scheduler.StepLR(optimizer_model, step_size=10, gamma=0.5)
     for epoch in range(args.pretrain_epochs):
         flag = 0
-        if epoch >= 5:
+        if epoch >= 1:
             flag = 1
         train_round(flag)
         scheduler_model.step()

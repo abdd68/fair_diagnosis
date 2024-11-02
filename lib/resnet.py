@@ -51,7 +51,35 @@ class Resnet18(nn.Module):
         label_output = self.label_predictor(features)
         return label_output
     
+class Resnet50(nn.Module):
+    def __init__(self, num_classes=10):
+        super(Resnet50, self).__init__()
+        
+        # 加载 ResNet50 的特征提取部分
+        resnet = models.resnet50(pretrained=True)
+        
+        # 保存每一层的引用
+        self.layer1 = resnet.layer1
+        self.layer2 = resnet.layer2
+        self.layer3 = resnet.layer3
+        self.layer4 = resnet.layer4
+        self.feature_extractor = nn.Sequential(*list(resnet.children())[:-1])  # 去掉最后的全连接层
+        
+        # 标签预测器 (f)
+        self.label_predictor = nn.Sequential(
+            nn.Linear(resnet.fc.in_features, 256),
+            nn.ReLU(),
+            nn.Linear(256, num_classes)
+        )
 
+    def forward(self, x):
+        # 提取特征
+        features = self.feature_extractor(x)
+        features = features.view(features.size(0), -1)  # 展平
+        
+        # 标签预测
+        label_output = self.label_predictor(features)
+        return label_output
 
 
 class Discriminator(nn.Module):
