@@ -10,7 +10,7 @@ import numpy as np
 from tqdm import tqdm
 import argparse
 from pytorch_grad_cam import GradCAM
-from lib.resnet import Generator, Discriminator, Resnet18
+from lib.resnet import Generator, Discriminator, Resnet18, Resnet50
 from lib.vision_transformer import VisionTransformer
 from import_datasets import MimicCXRDataset, CheXpertDataset, TcgaDataset
 import logging
@@ -69,7 +69,7 @@ def process_dataset():
 from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
 
 def generate_zone_masks_Y(images, labels):
-    if args.model == 'resnet':
+    if args.model == 'resnet18' or args.model == 'resnet50':
         targets = [ClassifierOutputTarget(labels)]
         zone_mask = gradcam_Y(input_tensor=images, targets=targets)
     elif args.model == 'vit':
@@ -344,7 +344,7 @@ def acc_test_round(model, model_G, noise_strength=0.1):
     logger.info(f"Test Loss: {avg_loss:.4f}, Accuracy: {accuracy:.4f}, F1: {f1:.4f}, AUC: {auc:.4f}")
     DP = abs(count_a_yhat1/count_a - count_na_yhat1/count_na)
     EO = abs(count_a_y1_yhat1/count_a_y1 - count_na_y1_yhat1/count_na_y1)
-    logger.info(f"DP:{DP:.2f}, EO:{EO:.2f}")
+    logger.info(f"DP:{DP:.4f}, EO:{EO:.4f}")
 
     return avg_loss, accuracy
  
@@ -409,7 +409,7 @@ if __name__ == '__main__':
     parser.add_argument('--pretrain_epochs', type=int, default=10, help='Number of epochs for training')
     parser.add_argument('--num_epochs', type=int, default=10, help='Number of epochs for training')
 
-    parser.add_argument('--model', type=str, default='resnet', help='model type, choose from resnet and vit')
+    parser.add_argument('--model', type=str, default='resnet18', help='model type, choose from resnet18, resnet50 and vit')
     parser.add_argument('-n', '--noise_strength', type=float, default=0.1, help='Strength of noise added by generator G')
     parser.add_argument('--no_adversarial', action='store_true', help='Enable adversarial training') # is false if not set
     parser.add_argument('-v', '--visualize', action='store_true', help='Enable visualization') # is false if not set
@@ -450,15 +450,20 @@ if __name__ == '__main__':
                                     transforms.Normalize(mean = [ -0.485, -0.456, -0.406 ],
                                                         std = [ 1., 1., 1. ]),])
     # 模型初始化并移动到 GPU（如果可用），并使用 DataParallel 包裹模型
-    if args.model == 'resnet':
+    if args.model == 'resnet18':
         model = Resnet18(num_classes = 2).to(device)
+    elif args.model == 'resnet50':
+        model = Resnet50(num_classes = 2).to(device)
     elif args.model == 'vit':
         model = VisionTransformer(depth = 1, num_classes = 2).to(device)
     G = Generator().to(device)
     D = Discriminator().to(device)
 
-    if args.model == 'resnet':
+    if args.model == 'resnet18':
         gradcam_Y = GradCAM(model=model, target_layers=[model.layer4[1].conv2])
+        gradcam_Z = GradCAM(model=D, target_layers=[D.conv2])
+    elif args.model == 'resnet50':
+        gradcam_Y = GradCAM(model=model, target_layers=[model.layer4[2].conv3])
         gradcam_Z = GradCAM(model=D, target_layers=[D.conv2])
     elif args.model == 'vit':
         gradcam_Y = VITAttentionGradRollout(model, discard_ratio=0.9)
@@ -483,7 +488,7 @@ if __name__ == '__main__':
 
     optimizer_G = optim.AdamW(G.parameters(), lr=1.1 * args.lr, weight_decay=1e-4)
     optimizer_D = optim.AdamW(D.parameters(), lr=args.lr, weight_decay=1e-4)
-    if args.model == 'resnet':
+    if args.model == 'resnet18' or args.model == 'resnet50':
         optimizer_model = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
     elif args.model == 'vit':
         optimizer_model = optim.AdamW(model.parameters(), lr=args.lr)
