@@ -403,7 +403,7 @@ if __name__ == '__main__':
     parser.add_argument('--device', type=str, default='cuda', help='Device to use for training (e.model., "cuda" or "cpu")')
     parser.add_argument('--alpha', type=float, default=0.8, help='Weight for the fairness loss term')
     parser.add_argument('--beta', type=float, default=1.0, help='Weight for the task loss term')
-    parser.add_argument('-lr','--lr', type=float, default=8e-6, help='Weight for the task loss term')
+    parser.add_argument('-lr','--lr', type=float, default=1e-4, help='Weight for the task loss term')
     parser.add_argument('--pretrain_epochs', type=int, default=10, help='Number of epochs for training')
     parser.add_argument('--num_epochs', type=int, default=10, help='Number of epochs for training')
 
